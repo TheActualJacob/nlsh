@@ -94,11 +94,22 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           PKG="nlsh-${VERSION}.pkg"
 
-          xcrun notarytool submit "$PKG" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait
+          for attempt in 1 2 3; do
+            echo "Notarization attempt $attempt..."
+            if xcrun notarytool submit "$PKG" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --wait; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Notarization failed after 3 attempts"
+              exit 1
+            fi
+            echo "Retrying in 30 seconds..."
+            sleep 30
+          done
 
           xcrun stapler staple "$PKG"
 
