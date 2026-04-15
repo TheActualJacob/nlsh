@@ -20,9 +20,90 @@ jobs:
         run: cargo build --release
         working-directory: nlsh
 
-      - name: Upload binaries to release
+      - name: Import Developer ID certificates
+        env:
+          APP_CERT_P12: ${{ secrets.DEVELOPER_ID_APP_CERT_P12 }}
+          INSTALLER_CERT_P12: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          # Create a temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import Developer ID Application cert
+          echo "$APP_CERT_P12" | base64 --decode > "$RUNNER_TEMP/app_cert.p12"
+          security import "$RUNNER_TEMP/app_cert.p12" \
+            -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign
+
+          # Import Developer ID Installer cert
+          echo "$INSTALLER_CERT_P12" | base64 --decode > "$RUNNER_TEMP/installer_cert.p12"
+          security import "$RUNNER_TEMP/installer_cert.p12" \
+            -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign
+
+          # Add to search list and allow access
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Sign binaries
+        run: |
+          APP_CERT="Developer ID Application: Robert Ryan (JQTCAT85GP)"
+          INSTALL_DIR="nlsh/pkgroot/usr/local/bin"
+          mkdir -p "$INSTALL_DIR"
+          cp nlsh/target/release/nlsh "$INSTALL_DIR/nlsh"
+          cp nlsh-model/.build/release/nlsh-model "$INSTALL_DIR/nlsh-model"
+
+          for bin in nlsh nlsh-model; do
+            codesign \
+              --sign "$APP_CERT" \
+              --options runtime \
+              --timestamp \
+              --force \
+              "$INSTALL_DIR/$bin"
+          done
+
+      - name: Build and sign .pkg
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          INSTALLER_CERT="Developer ID Installer: Robert Ryan (JQTCAT85GP)"
+
+          pkgbuild \
+            --root nlsh/pkgroot \
+            --identifier com.robertryan.nlsh \
+            --version "$VERSION" \
+            --install-location "/" \
+            nlsh-unsigned.pkg
+
+          productsign \
+            --sign "$INSTALLER_CERT" \
+            --timestamp \
+            nlsh-unsigned.pkg \
+            "nlsh-${VERSION}.pkg"
+
+      - name: Notarize and staple .pkg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          PKG="nlsh-${VERSION}.pkg"
+
+          xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+
+          xcrun stapler staple "$PKG"
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            nlsh/target/release/nlsh
-            nlsh-model/.build/release/nlsh-model
+            nlsh-${{ github.ref_name }}.pkg
