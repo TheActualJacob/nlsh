@@ -81,8 +81,13 @@ pub fn generate(prompt: &str) -> Result<String, LlmError> {
 
     if !output.status.success() {
         let code = output.status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return if code == 1 {
             Err(LlmError::Unavailable)
+        } else if stderr.contains("guardrailViolation") {
+            Err(LlmError::Other(anyhow::anyhow!(
+                "Apple Intelligence declined to answer this request (safety filter)"
+            )))
         } else {
             Err(LlmError::Other(anyhow::anyhow!("nlsh-model exited {code}")))
         };

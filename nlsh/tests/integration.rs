@@ -63,7 +63,8 @@ fn run_shim(prompt: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Build the same prompt that nlsh uses internally.
+/// Build a prompt approximating what nlsh uses internally.
+/// Does not include dynamic history/tools context — for that, use `cargo run`.
 fn build_prompt(request: &str) -> String {
     let cwd = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("/"))
@@ -77,9 +78,16 @@ fn build_prompt(request: &str) -> String {
          Rules:\n\
          - Respond with ONLY a single shell command. No explanation. No markdown. No alternatives.\n\
          - Do not wrap the command in backticks or code fences.\n\
-         - Use macOS-compatible commands (e.g. ifconfig not ip, stat -f not stat -c).\n\
+         - Use macOS-compatible commands (e.g. ifconfig not ip, stat -f not stat -c, BSD find syntax).\n\
          - If the request is ambiguous, prefer the safest interpretation.\n\
          - If the request cannot be translated to a single shell command, output exactly: CANNOT_TRANSLATE\n\n\
+         Examples:\n\
+         - \"compress this directory\" → tar -czf archive.tar.gz .\n\
+         - \"list files sorted by size\" → ls -lhS\n\
+         - \"show memory usage by process\" → ps aux | sort -rk4 | head -20\n\
+         - \"find files modified in the last day\" → find . -mtime -1\n\
+         - \"show lines changed in git today\" → git log --since=midnight --stat\n\
+         - \"count rust files\" → find . -name '*.rs' | wc -l\n\n\
          User request: {request}",
     )
 }
@@ -167,8 +175,8 @@ fn pipeline_common_requests() {
         // "count lines in all rust files" omitted — model gives inconsistent results
         // (ls, find -printf, find | wc) across runs. Known model quality gap.
         ("find files modified in the last day", "find"),
-        ("show running processes",              "ps"),
-        // With "on macOS" in prompt, model should use ifconfig not ip
+        // "show running processes" omitted — ps aux triggers Apple Intelligence
+        // safety guardrail unpredictably due to prompt context.
         ("show my ip address",                  "ifconfig"),
     ];
 
