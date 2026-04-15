@@ -51,9 +51,9 @@ fn run(args: Args) -> Result<()> {
     // ── Signal handlers ──────────────────────────────────────────────────────
     signals::install();
 
-    // ── Ollama availability check ────────────────────────────────────────────
+    // ── Apple Intelligence availability check ────────────────────────────────
     let nl_disabled = if !llm::check_available() {
-        eprintln!("[nlsh: ollama unreachable — NL routing disabled]");
+        eprintln!("[nlsh: Apple Intelligence unavailable — NL routing disabled]");
         true
     } else {
         false
@@ -178,6 +178,29 @@ fn cmd_install() -> Result<()> {
             }
             Err(e) => return Err(e.into()),
         }
+    }
+
+    // Copy the nlsh-model shim alongside the nlsh binary.
+    let shim_src = llm::shim_path();
+    let shim_target = std::path::Path::new("/usr/local/bin/nlsh-model");
+    if shim_src.exists() {
+        match std::fs::copy(&shim_src, shim_target) {
+            Ok(_) => {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(shim_target, std::fs::Permissions::from_mode(0o755)).ok();
+                println!("Copied nlsh-model to {}", shim_target.display());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                println!("Permission denied for nlsh-model. Run:");
+                println!(
+                    "  sudo cp {} /usr/local/bin/nlsh-model && sudo chmod +x /usr/local/bin/nlsh-model",
+                    shim_src.display()
+                );
+            }
+            Err(e) => eprintln!("Warning: could not copy nlsh-model: {e}"),
+        }
+    } else {
+        println!("Warning: nlsh-model shim not found at {} — NL routing will be disabled", shim_src.display());
     }
 
     let shells_path = "/etc/shells";

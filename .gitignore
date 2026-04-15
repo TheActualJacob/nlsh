@@ -1,3 +1,4 @@
 nlsh/target/
 nlsh/Cargo.lock
+nlsh-model/.build/
 *.DS_Store

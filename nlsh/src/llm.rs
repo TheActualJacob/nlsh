@@ -1,13 +1,13 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
-const OLLAMA_BASE: &str = "http://localhost:11434";
-const DEFAULT_MODEL: &str = "qwen2.5-coder:7b";
+const BUILD_PATH: &str = env!("NLSH_MODEL_BUILD_PATH");
 
 #[derive(Debug)]
 pub enum LlmError {
-    /// Ollama is not reachable (not installed / not running).
+    /// Apple Intelligence is not available on this device.
     Unavailable,
     Other(anyhow::Error),
 }
@@ -15,116 +15,78 @@ pub enum LlmError {
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LlmError::Unavailable => write!(f, "ollama not reachable"),
+            LlmError::Unavailable => write!(f, "Apple Intelligence not available"),
             LlmError::Other(e) => write!(f, "{e}"),
         }
     }
 }
 
-#[derive(Serialize)]
-struct GenerateRequest<'a> {
-    model: &'a str,
-    prompt: &'a str,
-    stream: bool,
-    options: GenerateOptions,
+pub fn shim_path() -> PathBuf {
+    // 1. Prefer sibling of current executable (release install).
+    if let Ok(exe) = std::env::current_exe() {
+        let candidate = exe.parent().unwrap_or(exe.as_path()).join("nlsh-model");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // 2. Fall back to build-time path (cargo run / dev).
+    if !BUILD_PATH.is_empty() {
+        let p = PathBuf::from(BUILD_PATH);
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("nlsh-model") // last-ditch: hope it's on $PATH
 }
 
-#[derive(Serialize)]
-struct GenerateOptions {
-    temperature: f32,
-    num_predict: u32,
-}
-
-#[derive(Deserialize)]
-struct GenerateChunk {
-    response: String,
-    done: bool,
-}
-
-fn client() -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?)
-}
-
-/// Returns true if Ollama is reachable at the default address.
+/// Returns true if Apple Intelligence is available via the nlsh-model shim.
 pub fn check_available() -> bool {
-    let Ok(c) = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(1))
-        .build()
-    else {
-        return false;
-    };
-    c.get(format!("{OLLAMA_BASE}/api/tags"))
-        .send()
-        .map(|r| r.status().is_success())
+    Command::new(shim_path())
+        .arg("--check")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
         .unwrap_or(false)
 }
 
-/// Send `prompt` to Ollama, stream tokens to stdout as they arrive,
-/// and return the full response text.
-///
-/// Prints a leading `❯ ` prompt indicator before tokens start streaming.
-/// The caller is responsible for clearing/overwriting this line afterwards.
+/// Send `prompt` to the Foundation Models shim, wait for the full response,
+/// and return the response text. Displays a thinking indicator while waiting.
 pub fn generate(prompt: &str) -> Result<String, LlmError> {
-    let c = client().map_err(|e| LlmError::Other(e))?;
-
-    let body = GenerateRequest {
-        model: DEFAULT_MODEL,
-        prompt,
-        stream: true,
-        options: GenerateOptions {
-            temperature: 0.1,
-            num_predict: 200,
-        },
-    };
-
-    let response = c
-        .post(format!("{OLLAMA_BASE}/api/generate"))
-        .json(&body)
-        .send()
+    let mut child = Command::new(shim_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
         .map_err(|e| {
-            if e.is_connect() || e.is_timeout() {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 LlmError::Unavailable
             } else {
                 LlmError::Other(e.into())
             }
         })?;
 
-    if !response.status().is_success() {
-        return Err(LlmError::Other(anyhow::anyhow!(
-            "ollama returned {}",
-            response.status()
-        )));
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes()).ok();
     }
 
-    // Show streaming indicator.
-    print!("\r\x1b[2K  \x1b[36m⟳\x1b[0m ");
+    // Show thinking indicator while waiting.
+    print!("\r\x1b[2K  \x1b[36m⟳\x1b[0m thinking...");
     std::io::stdout().flush().ok();
 
-    let mut full = String::new();
-    let reader = std::io::BufReader::new(response);
+    let output = child.wait_with_output().map_err(|e| LlmError::Other(e.into()))?;
 
-    for line in reader.lines() {
-        let line = line.map_err(|e| LlmError::Other(e.into()))?;
-        if line.is_empty() {
-            continue;
-        }
-        let chunk: GenerateChunk =
-            serde_json::from_str(&line).map_err(|e| LlmError::Other(e.into()))?;
+    print!("\r\x1b[2K"); // clear thinking line
+    std::io::stdout().flush().ok();
 
-        if !chunk.response.is_empty() {
-            print!("{}", chunk.response);
-            std::io::stdout().flush().ok();
-            full.push_str(&chunk.response);
-        }
-
-        if chunk.done {
-            break;
-        }
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        return if code == 1 {
+            Err(LlmError::Unavailable)
+        } else {
+            Err(LlmError::Other(anyhow::anyhow!("nlsh-model exited {code}")))
+        };
     }
 
-    println!();
-    Ok(full)
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

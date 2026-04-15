@@ -213,7 +213,7 @@ impl InterceptLoop {
             },
             Err(llm::LlmError::Unavailable) => {
                 eprintln!(
-                    "\r\x1b[2K  \x1b[33m[nlsh: ollama not running — forwarding as shell command]\x1b[0m"
+                    "\r\x1b[2K  \x1b[33m[nlsh: Apple Intelligence unavailable — forwarding as shell command]\x1b[0m"
                 );
                 self.send_to_shell(line)
             }
