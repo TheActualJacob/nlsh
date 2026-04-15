@@ -46,9 +46,57 @@ pub fn classify(line: &str) -> LineKind {
         .status();
 
     match result {
-        Ok(status) if status.success() => LineKind::Shell,
+        Ok(status) if status.success() => {
+            // The first token is a known command, but the rest of the line may
+            // still be natural language (e.g. "find my ip address", "what is
+            // my username"). If the arguments look like plain English rather
+            // than shell usage, route to NL anyway.
+            if looks_like_nl_args(trimmed) {
+                LineKind::NaturalLanguage
+            } else {
+                LineKind::Shell
+            }
+        }
         _ => LineKind::NaturalLanguage,
     }
+}
+
+/// Returns true if the arguments following the first token look like natural
+/// language rather than shell usage.
+///
+/// Shell usage has flags (`-x`, `--foo`), paths (`/usr`, `./file`, `~`),
+/// globs (`*.rs`), redirects, or quoted strings.  If none of those are
+/// present and there are at least two additional words, the line is almost
+/// certainly an English sentence whose first word happens to be a command.
+fn looks_like_nl_args(line: &str) -> bool {
+    let mut tokens = line.split_whitespace();
+    let _ = tokens.next(); // skip first token (already known to be a command)
+    let args: Vec<&str> = tokens.collect();
+
+    // Need at least two more words to distinguish "find ." from "find my ip".
+    if args.len() < 2 {
+        return false;
+    }
+
+    // Any shell-ish token → treat as shell.
+    let shell_chars = |s: &str| {
+        s.starts_with('-')          // flag
+            || s.starts_with('/')   // absolute path
+            || s.starts_with('.')   // relative path or glob
+            || s.starts_with('~')   // home dir
+            || s.contains('*')      // glob
+            || s.contains('?')      // glob
+            || s.contains('=')      // var=val
+            || s.starts_with('"')
+            || s.starts_with('\'')
+    };
+
+    if args.iter().any(|a| shell_chars(a)) {
+        return false;
+    }
+
+    // All remaining tokens are plain lowercase/uppercase words — NL.
+    true
 }
 
 #[cfg(test)]
@@ -92,5 +140,23 @@ mod tests {
     #[test]
     fn unknown_is_nl() {
         assert_eq!(classify("show me disk usage"), LineKind::NaturalLanguage);
+    }
+
+    #[test]
+    fn find_with_flags_is_shell() {
+        assert_eq!(classify("find . -name '*.rs'"), LineKind::Shell);
+        assert_eq!(classify("find /tmp -mtime -1"), LineKind::Shell);
+    }
+
+    #[test]
+    fn find_english_sentence_is_nl() {
+        assert_eq!(classify("find my ip address"), LineKind::NaturalLanguage);
+        assert_eq!(classify("find large files in home directory"), LineKind::NaturalLanguage);
+    }
+
+    #[test]
+    fn what_english_sentence_is_nl() {
+        assert_eq!(classify("what is my username"), LineKind::NaturalLanguage);
+        assert_eq!(classify("what is my ip address"), LineKind::NaturalLanguage);
     }
 }
