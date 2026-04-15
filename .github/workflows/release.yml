@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: macos-26
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -94,22 +95,39 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           PKG="nlsh-${VERSION}.pkg"
 
-          for attempt in 1 2 3; do
-            echo "Notarization attempt $attempt..."
-            if xcrun notarytool submit "$PKG" \
+          # Submit without --wait so we control the polling timeout
+          SUBMISSION_ID=$(xcrun notarytool submit "$PKG" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --output-format json | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          echo "Submission ID: $SUBMISSION_ID"
+
+          # Poll for up to 15 minutes (30 attempts × 30s)
+          for i in $(seq 1 30); do
+            sleep 30
+            STATUS=$(xcrun notarytool info "$SUBMISSION_ID" \
               --apple-id "$APPLE_ID" \
               --team-id "$APPLE_TEAM_ID" \
               --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --wait; then
+              --output-format json | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+            echo "[$i/30] Status: $STATUS"
+            if [ "$STATUS" = "Accepted" ]; then
               break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "Notarization failed after 3 attempts"
+            elif [ "$STATUS" = "Invalid" ] || [ "$STATUS" = "Rejected" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" || true
+              echo "Notarization failed: $STATUS"
               exit 1
             fi
-            echo "Retrying in 30 seconds..."
-            sleep 30
           done
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "Notarization timed out after 15 minutes (status: $STATUS)"
+            exit 1
+          fi
 
           xcrun stapler staple "$PKG"
 
