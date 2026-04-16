@@ -9,47 +9,63 @@ $ list all files modified today
 [y] run  [e] edit  [n] cancel
 ```
 
-No cloud. No API keys. No mode switching. Inference runs entirely on-device via Apple Foundation Models.
+No cloud. No API keys. No mode switching. Runs entirely on-device — either via Apple Foundation Models or a local Ollama model.
 
 ## Requirements
 
 - macOS 26 or later
-- Apple Intelligence enabled (System Settings → Apple Intelligence & Siri)
+- **Apple Intelligence** (System Settings → Apple Intelligence), or
+- **Ollama** — nlsh will offer to install it automatically during setup
 
 ## Install
 
-### Download pre-built binaries (recommended)
+### One-liner (build from source)
+
+Requires [Rust](https://rustup.rs) and Xcode Command Line Tools.
 
 ```sh
-# Download both binaries
-curl -Lo nlsh https://github.com/TheActualJacob/nlsh/releases/latest/download/nlsh
-curl -Lo nlsh-model https://github.com/TheActualJacob/nlsh/releases/latest/download/nlsh-model
-
-# Install
-chmod +x nlsh nlsh-model
-sudo mv nlsh nlsh-model /usr/local/bin/
-
-# Register as a valid shell
-echo '/usr/local/bin/nlsh' | sudo tee -a /etc/shells
+git clone https://github.com/TheActualJacob/nlsh.git && cd nlsh/nlsh && cargo build --release && sudo ./target/release/nlsh --install
 ```
 
-### (Optional) Set as your default shell
+Then set as your default shell:
 
 ```sh
 chsh -s /usr/local/bin/nlsh
 ```
 
-You can always switch back with `chsh -s /bin/zsh`.
+### One-liner (pre-built, when a release is available)
+
+```sh
+curl -fsSL https://github.com/TheActualJacob/nlsh/releases/latest/download/install.sh | sh
+```
+
+## First launch
+
+The first time you run nlsh, a setup screen appears:
+
+```
+  ╭────────────────────────────────────────────╮
+  │         nlsh · model setup                 │
+  ╰────────────────────────────────────────────╯
+
+  Choose an AI backend:
+
+  ▶ 1  Apple Intelligence   on-device, no download
+    2  Ollama local model   ~986 MB download
+
+  [↑↓ / 1-2] navigate   [Enter] confirm   [q] quit
+```
+
+- **Apple Intelligence** — uses the on-device model, no download needed
+- **Ollama** — downloads `qwen2.5-coder:1.5b` (~986 MB); nlsh installs Ollama automatically via Homebrew if it isn't already present
+
+At the end of setup you'll be asked whether to set nlsh as your default shell.
+
+Run `nlsh --setup` at any time to switch backends or re-configure.
 
 ## Usage
 
-Launch nlsh (or open a new terminal if you set it as your default shell):
-
-```sh
-nlsh
-```
-
-From here, use it exactly like zsh. Shell commands run normally. When you type something that isn't a shell command, nlsh routes it to the on-device model:
+From here, use it exactly like zsh. Shell commands run normally. When you type something that isn't a shell command, nlsh routes it to the model:
 
 ```
 $ show disk usage for each folder here, sorted largest first
@@ -72,20 +88,16 @@ $ show disk usage for each folder here, sorted largest first
 
 | Flag | Description |
 |------|-------------|
+| `--setup` | Re-run model selection / backend configuration |
 | `--dry-run` | Print the generated command but don't run it |
 | `--no-hist` | Prefix generated commands with a space (hides them from history if `HIST_IGNORE_SPACE` is set in `.zshrc`) |
-
-```sh
-nlsh --dry-run     # preview mode — nothing executes
-nlsh --no-hist     # generated commands stay out of shell history
-```
 
 ## How it works
 
 nlsh wraps zsh in a pseudoterminal. Every line you type is classified before being sent to the shell:
 
 - **Recognized command** (exists in `$PATH`, is a builtin, alias, or function) → forwarded directly to zsh.
-- **Unrecognized input** → sent to the on-device Apple Foundation Models for translation into a shell command.
+- **Unrecognized input** → sent to the configured model for translation into a shell command.
 
 When a TUI application starts (vim, less, htop, ssh), nlsh detects the alternate screen and switches to full passthrough mode — every keystroke goes straight to the pty with zero interception.
 
@@ -93,17 +105,14 @@ When a TUI application starts (vim, less, htop, ssh), nlsh detects the alternate
 
 **"Apple Intelligence unavailable — NL routing disabled"**
 
-NL routing is silently skipped and nlsh behaves as a plain zsh wrapper. Fix the underlying issue:
 - macOS 26+ required
-- Apple Intelligence must be enabled: System Settings → Apple Intelligence & Siri → turn on Apple Intelligence
+- Apple Intelligence must be enabled: System Settings → Apple Intelligence & Siri
 - Your device must be eligible (M-series Mac or A17 Pro iPhone/iPad and later)
+- Switch to Ollama with `nlsh --setup` if Apple Intelligence isn't available
 
-**Permission denied during install**
+**"Ollama unavailable — NL routing disabled"**
 
-Run the `sudo mv` step, or if that fails, try:
-```sh
-sudo install -m 755 nlsh nlsh-model /usr/local/bin/
-```
+Ollama isn't running. Start it with `ollama serve`, then open a new nlsh session. Or switch backends with `nlsh --setup`.
 
 **Generated commands aren't going into shell history**
 
@@ -113,22 +122,8 @@ Pass `--no-hist` and add `setopt HIST_IGNORE_SPACE` to your `~/.zshrc`.
 
 ```sh
 sudo rm /usr/local/bin/nlsh /usr/local/bin/nlsh-model
-# Edit /etc/shells and remove the /usr/local/bin/nlsh line
-# If you changed your default shell:
-chsh -s /bin/zsh
-```
-
-## Build from source
-
-Requires Rust stable ≥ 1.77 and Xcode Command Line Tools.
-
-```sh
-git clone https://github.com/TheActualJacob/nlsh.git
-cd nlsh/nlsh
-cargo build --release
-sudo cp target/release/nlsh /usr/local/bin/nlsh
-sudo cp ../nlsh-model/.build/release/nlsh-model /usr/local/bin/nlsh-model
-echo '/usr/local/bin/nlsh' | sudo tee -a /etc/shells
+# Remove /usr/local/bin/nlsh from /etc/shells
+chsh -s /bin/zsh   # if you set nlsh as your default shell
 ```
 
 ## License
