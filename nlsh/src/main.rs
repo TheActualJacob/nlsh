@@ -14,7 +14,6 @@ mod terminal;
 
 use anyhow::Result;
 use clap::Parser;
-use portable_pty::PtySize;
 use std::io::{Read, Write};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -85,8 +84,9 @@ fn run(args: Args) -> Result<()> {
     // ── Spawn child shell ────────────────────────────────────────────────────
     let mut session = pty::spawn(cols, rows)?;
 
-    let master_reader = session.master.try_clone_reader()?;
-    let master_writer = session.master.take_writer()?;
+    let master_reader = session.clone_reader()?;
+    let master_writer: Box<dyn std::io::Write + Send> = Box::new(session.clone_writer()?);
+    let slave_fd = session.slave_fd;
 
     // ── Enter raw mode (RAII — restored on drop) ─────────────────────────────
     let _raw = terminal::RawMode::enter()?;
@@ -126,7 +126,7 @@ fn run(args: Args) -> Result<()> {
     });
 
     // ── SIGWINCH thread: resize pty when host terminal is resized ────────────
-    let master = session.master;
+    let master_fd_for_resize = session.master_fd;
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(50));
         if signals::CHILD_EXITED.load(Ordering::Relaxed) {
@@ -134,14 +134,13 @@ fn run(args: Args) -> Result<()> {
         }
         if signals::SIGWINCH_RECEIVED.swap(false, Ordering::Relaxed) {
             let (cols, rows) = terminal::get_terminal_size();
-            master
-                .resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .ok();
+            let ws = libc::winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            unsafe { libc::ioctl(master_fd_for_resize, libc::TIOCSWINSZ, &ws) };
         }
     });
 
@@ -153,6 +152,7 @@ fn run(args: Args) -> Result<()> {
         dry_run: args.dry_run,
         no_hist: args.no_hist,
         config: cfg,
+        slave_fd,
     };
     let _ = intercept.run();
 

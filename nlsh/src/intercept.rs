@@ -17,6 +17,10 @@ pub struct InterceptLoop {
     pub no_hist: bool,
     /// Active backend configuration for LLM inference.
     pub config: crate::config::NlshConfig,
+    /// Raw fd of the PTY slave, used to detect when a child process has
+    /// disabled ECHO (e.g. `sudo` password prompts). When ECHO is off we
+    /// forward bytes directly instead of buffering them.
+    pub slave_fd: libc::c_int,
 }
 
 impl InterceptLoop {
@@ -30,6 +34,10 @@ impl InterceptLoop {
 
         // Bracketed-paste state.
         let mut in_paste = false;
+
+        // ECHO-off mode: set when the PTY slave has ECHO disabled (password prompt).
+        // In this mode every byte is forwarded raw — no buffering, no NL routing.
+        let mut echo_off = false;
 
         loop {
             // Check if child has exited (set by output thread via SIGHUP).
@@ -52,6 +60,23 @@ impl InterceptLoop {
             if self.passthrough.load(Ordering::Relaxed) || in_paste {
                 self.master_writer.write_all(&[byte])?;
                 self.master_writer.flush().ok();
+                continue;
+            }
+
+            // ── ECHO-off mode (password / secure input prompt) ───────────────
+            // Re-check the slave's ECHO flag whenever the line buffer is empty
+            // (i.e. at the start of each new input sequence).
+            if line_buf.is_empty() {
+                echo_off = !slave_echo_on(self.slave_fd);
+            }
+            if echo_off {
+                self.master_writer.write_all(&[byte])?;
+                self.master_writer.flush().ok();
+                // CR/LF ends the hidden input; clear echo_off so next input is
+                // re-checked (the child may re-enable ECHO after reading the password).
+                if byte == 0x0d || byte == 0x0a {
+                    echo_off = false;
+                }
                 continue;
             }
 
@@ -255,4 +280,16 @@ fn erase_line(stdout: &mut std::io::Stdout, char_count: usize) {
         let _ = stdout.write_all(b"\x08 \x08");
     }
     let _ = stdout.flush();
+}
+
+/// Returns `true` when the PTY slave currently has ECHO enabled.
+/// A return value of `false` means the child has disabled echo (e.g. `sudo`
+/// waiting for a password), and the intercept loop should forward bytes raw.
+fn slave_echo_on(slave_fd: libc::c_int) -> bool {
+    use nix::sys::termios::{tcgetattr, LocalFlags};
+    use std::os::unix::io::BorrowedFd;
+    let fd = unsafe { BorrowedFd::borrow_raw(slave_fd) };
+    tcgetattr(fd)
+        .map(|t| t.local_flags.contains(LocalFlags::ECHO))
+        .unwrap_or(true)
 }
