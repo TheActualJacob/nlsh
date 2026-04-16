@@ -1,7 +1,8 @@
 import Foundation
 import FoundationModels
 
-@main
+import _Concurrency
+
 struct NlshModel {
     static func main() async {
         let args = CommandLine.arguments
@@ -69,3 +70,5 @@ struct NlshModel {
         exit(0)
     }
 }
+
+await NlshModel.main()
