@@ -21,7 +21,7 @@ No cloud. No API keys. No mode switching. Runs entirely on-device — either via
 
 ### One-liner (build from source)
 
-Requires [Rust](https://rustup.rs) and Xcode Command Line Tools.
+Unfortunately Requires [Rust](https://rustup.rs) and Xcode Command Line Tools due to apple's HORRIBLE notarization systems.
 
 ```sh
 git clone https://github.com/TheActualJacob/nlsh.git && cd nlsh/nlsh && cargo build --release && sudo ./target/release/nlsh --install
