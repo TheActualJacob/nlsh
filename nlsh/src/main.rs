@@ -1,11 +1,14 @@
 mod classify;
+mod config;
 mod confirm;
 mod intercept;
 mod llm;
+mod ollama;
 mod parser;
 mod prompt;
 mod pty;
 mod safety;
+mod setup;
 mod signals;
 mod terminal;
 
@@ -35,6 +38,10 @@ struct Args {
     /// Install nlsh as a login shell (/usr/local/bin/nlsh + /etc/shells).
     #[arg(long)]
     install: bool,
+
+    /// Re-run model setup (choose backend / download model).
+    #[arg(long)]
+    setup: bool,
 }
 
 fn main() -> Result<()> {
@@ -51,9 +58,22 @@ fn run(args: Args) -> Result<()> {
     // ── Signal handlers ──────────────────────────────────────────────────────
     signals::install();
 
-    // ── Apple Intelligence availability check ────────────────────────────────
-    let nl_disabled = if !llm::check_available() {
-        eprintln!("[nlsh: Apple Intelligence unavailable — NL routing disabled]");
+    // ── Load or create config ────────────────────────────────────────────────
+    let existing = config::NlshConfig::load()?;
+    let cfg = if args.setup || existing.is_none() {
+        // First run or explicit --setup: show TUI.
+        setup::run_setup()?
+    } else {
+        existing.unwrap()
+    };
+
+    // ── Backend availability check ───────────────────────────────────────────
+    let nl_disabled = if !llm::check_available(&cfg) {
+        let backend_name = match cfg.backend {
+            config::Backend::Apple => "Apple Intelligence",
+            config::Backend::Ollama => "Ollama",
+        };
+        eprintln!("[nlsh: {backend_name} unavailable — NL routing disabled]");
         true
     } else {
         false
@@ -65,7 +85,6 @@ fn run(args: Args) -> Result<()> {
     // ── Spawn child shell ────────────────────────────────────────────────────
     let mut session = pty::spawn(cols, rows)?;
 
-    // Take reader and writer from master before moving master to resize thread.
     let master_reader = session.master.try_clone_reader()?;
     let master_writer = session.master.take_writer()?;
 
@@ -85,7 +104,6 @@ fn run(args: Args) -> Result<()> {
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => {
-                    // EIO / EOF: child shell has exited.
                     signals::CHILD_EXITED.store(true, Ordering::Relaxed);
                     signals::interrupt_stdin();
                     break;
@@ -93,9 +111,6 @@ fn run(args: Args) -> Result<()> {
                 Ok(n) => {
                     let chunk = &buf[..n];
 
-                    // Detect alternate screen to toggle passthrough mode.
-                    // \x1b[?1049h = enter alternate screen (vim, less, htop …)
-                    // \x1b[?1049l = leave alternate screen
                     if chunk.windows(8).any(|w| w == b"\x1b[?1049h") {
                         passthrough_out.store(true, Ordering::Relaxed);
                     }
@@ -111,7 +126,6 @@ fn run(args: Args) -> Result<()> {
     });
 
     // ── SIGWINCH thread: resize pty when host terminal is resized ────────────
-    // Master is moved here exclusively for resize calls.
     let master = session.master;
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -138,6 +152,7 @@ fn run(args: Args) -> Result<()> {
         nl_disabled,
         dry_run: args.dry_run,
         no_hist: args.no_hist,
+        config: cfg,
     };
     let _ = intercept.run();
 
@@ -180,7 +195,6 @@ fn cmd_install() -> Result<()> {
         }
     }
 
-    // Copy the nlsh-model shim alongside the nlsh binary.
     let shim_src = llm::shim_path();
     let shim_target = std::path::Path::new("/usr/local/bin/nlsh-model");
     if shim_src.exists() {
@@ -200,7 +214,10 @@ fn cmd_install() -> Result<()> {
             Err(e) => eprintln!("Warning: could not copy nlsh-model: {e}"),
         }
     } else {
-        println!("Warning: nlsh-model shim not found at {} — NL routing will be disabled", shim_src.display());
+        println!(
+            "Warning: nlsh-model shim not found at {} — NL routing will be disabled",
+            shim_src.display()
+        );
     }
 
     let shells_path = "/etc/shells";

@@ -3,11 +3,13 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use crate::config::{Backend, NlshConfig};
+
 const BUILD_PATH: &str = env!("NLSH_MODEL_BUILD_PATH");
 
 #[derive(Debug)]
 pub enum LlmError {
-    /// Apple Intelligence is not available on this device.
+    /// The configured backend is not available on this device / not running.
     Unavailable,
     Other(anyhow::Error),
 }
@@ -15,32 +17,31 @@ pub enum LlmError {
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LlmError::Unavailable => write!(f, "Apple Intelligence not available"),
+            LlmError::Unavailable => write!(f, "model not available"),
             LlmError::Other(e) => write!(f, "{e}"),
         }
     }
 }
 
 pub fn shim_path() -> PathBuf {
-    // 1. Prefer sibling of current executable (release install).
     if let Ok(exe) = std::env::current_exe() {
         let candidate = exe.parent().unwrap_or(exe.as_path()).join("nlsh-model");
         if candidate.exists() {
             return candidate;
         }
     }
-    // 2. Fall back to build-time path (cargo run / dev).
     if !BUILD_PATH.is_empty() {
         let p = PathBuf::from(BUILD_PATH);
         if p.exists() {
             return p;
         }
     }
-    PathBuf::from("nlsh-model") // last-ditch: hope it's on $PATH
+    PathBuf::from("nlsh-model")
 }
 
-/// Returns true if Apple Intelligence is available via the nlsh-model shim.
-pub fn check_available() -> bool {
+/// Check whether the Apple Intelligence shim is available (used during setup
+/// before a config exists).
+pub fn check_apple_shim() -> bool {
     Command::new(shim_path())
         .arg("--check")
         .stdout(Stdio::null())
@@ -50,9 +51,35 @@ pub fn check_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Send `prompt` to the Foundation Models shim, wait for the full response,
-/// and return the response text. Displays a thinking indicator while waiting.
-pub fn generate(prompt: &str) -> Result<String, LlmError> {
+/// Check whether the configured backend is ready.
+pub fn check_available(config: &NlshConfig) -> bool {
+    match config.backend {
+        Backend::Apple => check_apple_shim(),
+        Backend::Ollama => {
+            crate::ollama::is_running(&config.ollama_url)
+                && crate::ollama::has_model(&config.ollama_url, &config.ollama_model)
+        }
+    }
+}
+
+/// Send `prompt` to the configured backend and return the response.
+/// Displays a thinking indicator while waiting.
+pub fn generate(prompt: &str, config: &NlshConfig) -> Result<String, LlmError> {
+    match config.backend {
+        Backend::Apple => generate_apple(prompt),
+        Backend::Ollama => {
+            print!("\r\x1b[2K  \x1b[36m⟳\x1b[0m thinking...");
+            std::io::stdout().flush().ok();
+            let result =
+                crate::ollama::generate(&config.ollama_url, &config.ollama_model, prompt);
+            print!("\r\x1b[2K");
+            std::io::stdout().flush().ok();
+            result
+        }
+    }
+}
+
+fn generate_apple(prompt: &str) -> Result<String, LlmError> {
     let mut child = Command::new(shim_path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -70,13 +97,14 @@ pub fn generate(prompt: &str) -> Result<String, LlmError> {
         stdin.write_all(prompt.as_bytes()).ok();
     }
 
-    // Show thinking indicator while waiting.
     print!("\r\x1b[2K  \x1b[36m⟳\x1b[0m thinking...");
     std::io::stdout().flush().ok();
 
-    let output = child.wait_with_output().map_err(|e| LlmError::Other(e.into()))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| LlmError::Other(e.into()))?;
 
-    print!("\r\x1b[2K"); // clear thinking line
+    print!("\r\x1b[2K");
     std::io::stdout().flush().ok();
 
     if !output.status.success() {

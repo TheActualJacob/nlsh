@@ -8,13 +8,15 @@ pub struct InterceptLoop {
     /// Shared flag: true while an interactive program (vim, ssh, etc.) is
     /// running and we should pass through all input without buffering.
     pub passthrough: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// NL routing is disabled when Ollama is unavailable at startup.
+    /// NL routing is disabled when the configured backend is unavailable at startup.
     pub nl_disabled: bool,
     /// --dry-run: show the generated command but do not execute it.
     pub dry_run: bool,
     /// --no-hist: prefix commands with a space so HIST_IGNORE_SPACE suppresses
     /// them in the child shell's history.
     pub no_hist: bool,
+    /// Active backend configuration for LLM inference.
+    pub config: crate::config::NlshConfig,
 }
 
 impl InterceptLoop {
@@ -193,7 +195,7 @@ impl InterceptLoop {
         let ctx = prompt_mod::ShellContext::current();
         let full_prompt = prompt_mod::build_prompt(line, &ctx);
 
-        match llm::generate(&full_prompt) {
+        match llm::generate(&full_prompt, &self.config) {
             Ok(raw) => match parser::clean_llm_output(&raw) {
                 Some(cmd) => {
                     if self.dry_run {
@@ -213,7 +215,7 @@ impl InterceptLoop {
             },
             Err(llm::LlmError::Unavailable) => {
                 eprintln!(
-                    "\r\x1b[2K  \x1b[33m[nlsh: Apple Intelligence unavailable — forwarding as shell command]\x1b[0m"
+                    "\r\x1b[2K  \x1b[33m[nlsh: model unavailable — forwarding as shell command]\x1b[0m"
                 );
                 self.send_to_shell(line)
             }
